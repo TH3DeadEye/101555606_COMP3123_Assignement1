@@ -2,6 +2,7 @@ import { Request, Response, NextFunction } from 'express'
 import { isValidObjectId } from 'mongoose'
 import Employee from '../models/Employee'
 import User from '../models/User'
+import logger from '../utils/logger'
 
 // Only these fields may be set from the request body.
 // "user" is deliberately NOT in this list: the owner always comes from the JWT.
@@ -33,6 +34,7 @@ export const createEmployee = async (req: Request, res: Response, next: NextFunc
     }
 
     const employee = await Employee.create({ ...pickAllowed(req.body ?? {}), user: req.user!.id })
+    logger.info(`EMPLOYEE created id=${employee._id} owner=${req.user!.id}`)
     return res.status(201).json(employee)
   } catch (err) {
     next(err)
@@ -49,6 +51,7 @@ export const getEmployee = async (req: Request, res: Response, next: NextFunctio
     // Filtering by BOTH _id and user is what enforces ownership
     const employee = await Employee.findOne({ _id: eid, user: req.user!.id })
     if (!employee) {
+      logger.warn(`ACCESS denied or not found ${req.method} ${req.originalUrl} user=${req.user!.id}`)
       return res.status(404).json({ message: 'Employee not found' })
     }
     return res.status(200).json(employee)
@@ -70,8 +73,10 @@ export const updateEmployee = async (req: Request, res: Response, next: NextFunc
       { new: true, runValidators: true }
     )
     if (!employee) {
+      logger.warn(`ACCESS denied or not found ${req.method} ${req.originalUrl} user=${req.user!.id}`)
       return res.status(404).json({ message: 'Employee not found' })
     }
+    logger.info(`EMPLOYEE updated id=${employee._id} owner=${req.user!.id}`)
     return res.status(200).json(employee)
   } catch (err) {
     next(err)
@@ -87,8 +92,10 @@ export const deleteEmployee = async (req: Request, res: Response, next: NextFunc
 
     const employee = await Employee.findOneAndDelete({ _id: eid, user: req.user!.id })
     if (!employee) {
+      logger.warn(`ACCESS denied or not found ${req.method} ${req.originalUrl} user=${req.user!.id}`)
       return res.status(404).json({ message: 'Employee not found' })
     }
+    logger.info(`EMPLOYEE deleted id=${employee._id} owner=${req.user!.id}`)
     return res.status(204).send()
   } catch (err) {
     next(err)
