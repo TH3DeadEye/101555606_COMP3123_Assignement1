@@ -2,7 +2,8 @@ import { Request, Response, NextFunction } from 'express'
 import jwt from 'jsonwebtoken'
 import logger from '../utils/logger'
 
-// Adds req.user to Express's Request type (kept here so ts-node always sees it)
+// TypeScript doesn't know about req.user by default.
+// This tells it that a request can carry the logged-in user's id.
 declare global {
   namespace Express {
     interface Request {
@@ -19,12 +20,13 @@ export const auth = (req: Request, res: Response, next: NextFunction) => {
     return res.status(401).json({ message: 'Missing or malformed Authorization header' })
   }
 
-  const token = header.slice(7)
+  const token = header.replace('Bearer ', '')
 
   try {
     const secret = process.env.JWT_SECRET
     if (!secret) throw new Error('JWT_SECRET is not set')
 
+    // verify() checks the signature and the expiry, then gives back what we put in the token at login
     const payload = jwt.verify(token, secret) as { id: string }
     req.user = { id: payload.id }
     next()

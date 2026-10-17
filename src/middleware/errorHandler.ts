@@ -1,56 +1,36 @@
 import { Request, Response, NextFunction } from 'express'
-import { Error as MongooseError } from 'mongoose'
-import { AppError, ErrorDetail } from '../utils/AppError'
 import logger from '../utils/logger'
 
-// Unknown route -> JSON 404 (instead of Express's default HTML page)
-export const notFound = (req: Request, _res: Response, next: NextFunction) => {
-  next(new AppError(`Route not found: ${req.method} ${req.originalUrl}`, 404))
+// Runs when no route matched the request
+export const notFound = (req: Request, res: Response) => {
+  res.status(404).json({ message: `Route not found: ${req.method} ${req.originalUrl}` })
 }
 
-const isObject = (value: unknown): value is Record<string, unknown> =>
-  typeof value === 'object' && value !== null
-
-// The one place every error ends up. Always responds with JSON and never leaks stack traces.
-// Express recognises an error handler by it having exactly 4 parameters.
-export const errorHandler = (err: unknown, _req: Request, res: Response, _next: NextFunction) => {
-  // Errors we threw on purpose
-  if (err instanceof AppError) {
-    return res.status(err.statusCode).json({
-      message: err.message,
-      ...(err.details && { errors: err.details }),
-    })
-  }
-
-  // Malformed JSON body / body too large (from express.json)
-  if (isObject(err) && err['type'] === 'entity.parse.failed') {
+// Central error handler: every error passed to next(err) ends up here.
+// It always answers with JSON and never sends stack traces to the client.
+// Express knows this is an error handler because it has 4 parameters.
+export const errorHandler = (err: any, req: Request, res: Response, next: NextFunction) => {
+  // The request body was not valid JSON
+  if (err.type === 'entity.parse.failed') {
     return res.status(400).json({ message: 'Malformed JSON in request body' })
   }
-  if (isObject(err) && err['type'] === 'entity.too.large') {
+
+  // The request body was bigger than the 10kb limit set in app.ts
+  if (err.type === 'entity.too.large') {
     return res.status(413).json({ message: 'Request body too large' })
   }
 
-  // Duplicate key (e.g. two signups racing past the "already exists" check)
-  if (isObject(err) && err['code'] === 11000) {
-    const fields = Object.keys((err['keyPattern'] as object | undefined) ?? {})
-    return res.status(409).json({
-      message: `Duplicate value${fields.length ? ` for: ${fields.join(', ')}` : ''}`,
-    })
+  // MongoDB duplicate key, e.g. two signups with the same email at the same moment
+  if (err.code === 11000) {
+    return res.status(409).json({ message: 'Username or email already in use' })
   }
 
-  // Mongoose schema validation / bad ids
-  if (err instanceof MongooseError.ValidationError) {
-    const errors: ErrorDetail[] = Object.values(err.errors).map((e) => ({
-      field: e.path,
-      message: e.message,
-    }))
-    return res.status(400).json({ message: 'Validation failed', errors })
-  }
-  if (err instanceof MongooseError.CastError) {
-    return res.status(400).json({ message: `Invalid value for ${err.path}` })
+  // Mongoose rejected the data or an id
+  if (err.name === 'ValidationError' || err.name === 'CastError') {
+    return res.status(400).json({ message: err.message })
   }
 
-  // Anything else is a bug or an outage: log it server-side, tell the client nothing specific
-  logger.error(`UNHANDLED ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`)
+  // Anything else is unexpected: log the details, send the client a generic message
+  logger.error(`UNHANDLED ${req.method} ${req.originalUrl} ${err.stack || err}`)
   return res.status(500).json({ message: 'Internal server error' })
 }

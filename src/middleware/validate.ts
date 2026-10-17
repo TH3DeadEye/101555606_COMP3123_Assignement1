@@ -1,39 +1,30 @@
 import { Request, Response, NextFunction } from 'express'
 import { ZodType } from 'zod'
-import { AppError, ErrorDetail } from '../utils/AppError'
 import logger from '../utils/logger'
 
-interface Schemas {
-  body?: ZodType
-  params?: ZodType
-  query?: ZodType
-}
+// validate(schema, source) creates a middleware that checks one part of the request
+// (the body by default) against a zod schema.
+// - Invalid: responds 400 with a list of what's wrong.
+// - Valid: replaces req.body with the cleaned data (trimmed, email lowercased,
+//   unknown fields such as "user" removed) and moves on to the next handler.
+export const validate = (schema: ZodType, source: 'body' | 'params' | 'query' = 'body') => {
+  return (req: Request, res: Response, next: NextFunction) => {
+    const result = schema.safeParse(req[source])
 
-// Runs the given zod schemas against the request. On failure it passes a 400 AppError
-// (with one entry per problem) to the error handler. On success, req.body is replaced
-// with the parsed data, which drops any fields the schema doesn't know about.
-export const validate = (schemas: Schemas) => (req: Request, _res: Response, next: NextFunction) => {
-  const details: ErrorDetail[] = []
-
-  for (const part of ['params', 'query', 'body'] as const) {
-    const schema = schemas[part]
-    if (!schema) continue
-
-    const result = schema.safeParse(req[part] ?? {})
     if (!result.success) {
-      for (const issue of result.error.issues) {
-        const path = [part, ...issue.path].join('.')
-        details.push({ field: path, message: issue.message })
-      }
-    } else if (part === 'body') {
+      const errors = result.error.issues.map((issue) => ({
+        field: issue.path.join('.') || source,
+        message: issue.message,
+      }))
+      // Only log which fields failed, never their values (they could be passwords)
+      const fields = errors.map((e) => e.field).join(',')
+      logger.warn(`VALIDATION failed ${req.method} ${req.originalUrl} fields=${fields}`)
+      return res.status(400).json({ message: 'Validation failed', errors })
+    }
+
+    if (source === 'body') {
       req.body = result.data
     }
+    next()
   }
-
-  if (details.length > 0) {
-    // Log which fields failed, never their values (they may be passwords)
-    logger.warn(`VALIDATION failed ${req.method} ${req.originalUrl} fields=${details.map((d) => d.field).join(',')}`)
-    return next(new AppError('Validation failed', 400, details))
-  }
-  next()
 }

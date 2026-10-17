@@ -7,7 +7,7 @@ import { authLimiter } from '../middleware/rateLimiters'
 const user_router = express.Router()
 
 // Rate limit first, so blocked requests never reach validation or the database
-user_router.post('/signup', authLimiter, validate({ body: signupSchema }), signup)
-user_router.post('/login', authLimiter, validate({ body: loginSchema }), login)
+user_router.post('/signup', authLimiter, validate(signupSchema), signup)
+user_router.post('/login', authLimiter, validate(loginSchema), login)
 
 export default user_router

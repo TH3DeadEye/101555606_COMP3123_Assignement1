@@ -1,101 +1,106 @@
 import { Request, Response, NextFunction } from 'express'
-import { isValidObjectId } from 'mongoose'
 import Employee from '../models/Employee'
 import User from '../models/User'
 import logger from '../utils/logger'
 
-// Only these fields may be set from the request body.
-// "user" is deliberately NOT in this list: the owner always comes from the JWT.
-const ALLOWED_FIELDS = ['first_name', 'last_name', 'email', 'position', 'salary', 'date_of_joining', 'department']
+// These handlers only run after the auth and validate middleware, so:
+// - req.user.id is the logged-in user, taken from the JWT
+// - the eid is already checked, and req.body only contains known employee fields
+//   (validation removes anything else, including "user", so the client can't pick the owner)
 
-const pickAllowed = (body: Record<string, unknown>) => {
-  const out: Record<string, unknown> = {}
-  for (const key of ALLOWED_FIELDS) {
-    if (body[key] !== undefined) out[key] = body[key]
-  }
-  return out
-}
-
+// GET /api/v1/emp/employees - list only the logged-in user's employees
 export const listEmployees = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const employees = await Employee.find({ user: req.user!.id })
+    const userId = req.user!.id
+    const employees = await Employee.find({ user: userId })
     return res.status(200).json(employees)
   } catch (err) {
     next(err)
   }
 }
 
+// POST /api/v1/emp/employees - create an employee owned by the logged-in user
 export const createEmployee = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    // The owner must exist (e.g. the account could have been deleted after the token was issued)
-    const owner = await User.exists({ _id: req.user!.id })
+    const userId = req.user!.id
+
+    // Every employee needs an existing owner (the account could be deleted after login)
+    const owner = await User.findById(userId)
     if (!owner) {
       return res.status(401).json({ message: 'User for this token no longer exists' })
     }
 
-    const employee = await Employee.create({ ...pickAllowed(req.body ?? {}), user: req.user!.id })
-    logger.info(`EMPLOYEE created id=${employee._id} owner=${req.user!.id}`)
+    const employee = await Employee.create({ ...req.body, user: userId })
+    logger.info(`EMPLOYEE created id=${employee._id} owner=${userId}`)
     return res.status(201).json(employee)
   } catch (err) {
     next(err)
   }
 }
 
+// GET /api/v1/emp/employees/:eid - get one employee
 export const getEmployee = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const eid = req.params.eid
-    if (!eid || !isValidObjectId(eid)) {
-      return res.status(400).json({ message: 'Invalid employee id' })
-    }
+    const userId = req.user!.id
+    const employee = await Employee.findById(req.params.eid)
 
-    // Filtering by BOTH _id and user is what enforces ownership
-    const employee = await Employee.findOne({ _id: eid, user: req.user!.id })
     if (!employee) {
-      logger.warn(`ACCESS denied or not found ${req.method} ${req.originalUrl} user=${req.user!.id}`)
+      logger.warn(`EMPLOYEE not found id=${req.params.eid} user=${userId}`)
       return res.status(404).json({ message: 'Employee not found' })
     }
+    // The employee exists, but does it belong to this user?
+    if (employee.user.toString() !== userId) {
+      logger.warn(`ACCESS denied employee=${employee._id} user=${userId}`)
+      return res.status(403).json({ message: 'You are not allowed to access this employee' })
+    }
+
     return res.status(200).json(employee)
   } catch (err) {
     next(err)
   }
 }
 
+// PUT /api/v1/emp/employees/:eid - update one employee
 export const updateEmployee = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const eid = req.params.eid
-    if (!eid || !isValidObjectId(eid)) {
-      return res.status(400).json({ message: 'Invalid employee id' })
-    }
+    const userId = req.user!.id
+    const employee = await Employee.findById(req.params.eid)
 
-    const employee = await Employee.findOneAndUpdate(
-      { _id: eid, user: req.user!.id },
-      pickAllowed(req.body ?? {}),
-      { new: true, runValidators: true }
-    )
     if (!employee) {
-      logger.warn(`ACCESS denied or not found ${req.method} ${req.originalUrl} user=${req.user!.id}`)
+      logger.warn(`EMPLOYEE not found id=${req.params.eid} user=${userId}`)
       return res.status(404).json({ message: 'Employee not found' })
     }
-    logger.info(`EMPLOYEE updated id=${employee._id} owner=${req.user!.id}`)
+    if (employee.user.toString() !== userId) {
+      logger.warn(`ACCESS denied employee=${employee._id} user=${userId}`)
+      return res.status(403).json({ message: 'You are not allowed to access this employee' })
+    }
+
+    employee.set(req.body)
+    await employee.save() // save() also runs the schema validators
+    logger.info(`EMPLOYEE updated id=${employee._id} owner=${userId}`)
     return res.status(200).json(employee)
   } catch (err) {
     next(err)
   }
 }
 
+// DELETE /api/v1/emp/employees?eid=xxx - delete one employee
 export const deleteEmployee = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const eid = req.query.eid
-    if (typeof eid !== 'string' || !isValidObjectId(eid)) {
-      return res.status(400).json({ message: 'Invalid employee id' })
-    }
+    const userId = req.user!.id
+    const employee = await Employee.findById(req.query.eid)
 
-    const employee = await Employee.findOneAndDelete({ _id: eid, user: req.user!.id })
     if (!employee) {
-      logger.warn(`ACCESS denied or not found ${req.method} ${req.originalUrl} user=${req.user!.id}`)
+      logger.warn(`EMPLOYEE not found id=${req.query.eid} user=${userId}`)
       return res.status(404).json({ message: 'Employee not found' })
     }
-    logger.info(`EMPLOYEE deleted id=${employee._id} owner=${req.user!.id}`)
+    if (employee.user.toString() !== userId) {
+      logger.warn(`ACCESS denied employee=${employee._id} user=${userId}`)
+      return res.status(403).json({ message: 'You are not allowed to access this employee' })
+    }
+
+    await employee.deleteOne()
+    logger.info(`EMPLOYEE deleted id=${employee._id} owner=${userId}`)
     return res.status(204).send()
   } catch (err) {
     next(err)
